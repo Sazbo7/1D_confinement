@@ -8,6 +8,153 @@ import scipy.sparse as sparse
 import scipy.sparse.linalg.eigen.arpack as arp
 import warnings
 import scipy.integrate
+from tenpy.models.lattice import Site, Chain
+from tenpy.models.model import CouplingModel, NearestNeighborModel, MPOModel, CouplingMPOModel
+from tenpy.linalg import np_conserved as npc
+from tenpy.tools.params import asConfig
+from tenpy.networks.site import SpinHalfSite
+
+
+class MixedIsingModel(CouplingMPOModel):
+    r"""Spin-1/2 Mixed Ising chain.
+    The Hamiltonian reads:
+    .. math ::
+        H = \sum_i \mathtt{Jz}_{i,i+1} S^z_i S^z_{i+1} \\
+            + \sum_i \mathtt{h}_i S^z_i \\
+            + \sum_i \mathtt{g}_i S^x_i
+    All parameters are collected in a single dictionary `model_params`, which
+    is turned into a :class:`~tenpy.tools.params.Config` object.
+    Parameters
+    ----------
+    model_params : :class:`~tenpy.tools.params.Config`
+        Parameters for the model. See :cfg:config:`MixedIsingChain` below.
+    Options
+    -------
+    .. cfg:config :: MixedIsingChain
+        :include: CouplingMPOModel
+        L : int
+            Length of the chain.
+        Jxx, h, g : float | array
+            Coupling as defined for the Hamiltonian above.
+        bc_MPS : {'finite' | 'infinte'}
+            MPS boundary conditions. Coupling boundary conditions are chosen appropriately.
+    """
+
+    def init_sites(self, model_params):
+        conserve = model_params.get('conserve', 'parity')
+        assert conserve != 'Sz'
+        if conserve == 'best':
+            conserve = 'parity'
+            if self.verbose >= 1.:
+                print(self.name + ": set conserve to", conserve)
+        site = SpinHalfSite(conserve=conserve)
+        return site
+
+
+    def init_terms(self, model_params):
+        J = np.asarray(model_params.get('J', 1.))
+        g = np.asarray(model_params.get('g', 1.))
+        h = np.asarray(model_params.get('h', 1.))
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-g, u, 'Sigmax')
+            self.add_onsite(-h, u, 'Sigmaz')
+        for u1, u2, dx in self.lat.pairs['nearest_neighbors']:
+            self.add_coupling(-J, u1, 'Sigmaz', u2, 'Sigmaz', dx)
+        # done
+
+
+class Kitaev_ladder(CouplingMPOModel):
+    """Spin-1/2 Mixed Ising chain.
+    The Hamiltonian reads:
+    .. math ::
+        H = \sum_i \mathtt{J^\mu_i}_{i,i+1} S^\mu_i S^\mu_{i+1} \\
+            + \sum_i \mathtt{h}_i S^z_i \\
+            + \sum_i \mathtt{g}_i S^x_i
+    All parameters are collected in a single dictionary `model_params`, which
+    is turned into a :class:`~tenpy.tools.params.Config` object.
+    Parameters
+    ----------
+    model_params : :class:`~tenpy.tools.params.Config`
+        Parameters for the model. See :cfg:config:`MixedIsingChain` below.
+    Options
+    -------
+    .. cfg:config :: MixedIsingChain
+        :include: CouplingMPOModel
+        L : int
+            Number of rungs of ladder.
+        Jxx, h, g : float | array
+            Coupling as defined for the Hamiltonian above.
+        bc_MPS : {'finite' | 'infinte'}
+            MPS boundary conditions. Coupling boundary conditions are chosen appropriately.
+    """
+
+    def __init__(self, model_params):
+
+        model_params = asConfig(model_params, self.__class__.__name__)
+        model_params.setdefault('lattice', "Ladder")
+
+        # define some default parameters
+        Jz = model_params.get('Jz', 2.0)
+        Jx = model_params.get('Jx', 1.0)
+        Jy = model_params.get('Jy', 1.0)
+        hz = model_params.get('hz', 0.0)
+        hx = model_params.get('hx', 0.0)
+        hy = model_params.get('hy', 0.)
+
+        bc = 'periodic' if model_params['bc_MPS'] == 'infinite' else 'open'
+        CouplingMPOModel.__init__(self, model_params)
+
+        self.add_coupling(Jz, 0, 'Sz', 1, 'Sz', 0, plus_hc=True)
+        self.add_coupling([Jx, 0], 0, 'Sx', 0, 'Sx', 1, plus_hc=True)
+        self.add_coupling([0, Jy], 0, 'Sy', 0, 'Sy', 1, plus_hc=True)
+        self.add_coupling([0, Jx], 1, 'Sx', 1, 'Sx', 1, plus_hc=True)
+        self.add_coupling([Jy, 0], 1, 'Sy', 1, 'Sy', 1, plus_hc=True)
+
+        self.add_onsite(hz, 0, 'Sz')
+        self.add_onsite(hz, 1, 'Sz')
+        self.add_onsite(hx, 0, 'Sx')
+        self.add_onsite(hx, 1, 'Sx')
+        self.add_onsite(hy, 0, 'Sy')
+        self.add_onsite(hy, 1, 'Sy')
+
+        # construct the Hamiltonian in the Matrix-Product-Operator (MPO) picture
+        MPOModel.__init__(self, lat, self.calc_H_MPO())
+
+    def init_sites(self, model_params):
+        conserve = model_params.get('conserve', 'parity')
+        assert conserve != 'Sz'
+        if conserve == 'best':
+            conserve = 'parity'
+            if self.verbose >= 1.:
+                print(self.name + ": set conserve to", conserve)
+        site = SpinHalfSite(conserve=conserve)
+        return site
+
+
+    def init_terms(self, model_params):
+        Jx = np.asarray(model_params.get('Jx', 1.))
+        Jy = np.asarray(model_params.get('Jy', 1.))
+        Jz = np.asarray(model_params.get('Jz', 1.))
+
+        g = np.asarray(model_params.get('g', 1.))
+        h = np.asarray(model_params.get('h', 1.))
+
+        for u in range(len(self.lat.unit_cell)):
+            self.add_onsite(-g, u, 'Sigmax')
+            self.add_onsite(-h, u, 'Sigmaz')
+        for u1, u2, dx in self.lat.pairs['nearest_neighbors']:
+            self.add_coupling(-J, u1, 'Sigmaz', u2, 'Sigmaz', dx)
+        # done
+
+
+class MixedIsingChain(MixedIsingModel, NearestNeighborModel):
+    """The :class:`TFIModel` on a Chain, suitable for TEBD.
+    See the :class:`TFIModel` for the documentation of parameters.
+    """
+    def __init__(self, model_params):
+        model_params = asConfig(model_params, self.__class__.__name__)
+        model_params.setdefault('lattice', "Chain")
+        CouplingMPOModel.__init__(self, model_params)
 
 
 def TEBD_mixed_ising_confined(L, h, g, tmax, dt, verbose=True):
