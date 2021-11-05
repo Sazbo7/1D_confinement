@@ -82,3 +82,6 @@ def kitaev_ladder(L, J_ray, h_ray, BC='periodic'):
     basis=spin_basis_1d(L=2*L)
     H=hamiltonian(static,dynamic,dtype=np.float64,basis=basis,check_herm=False);
     return H;
+
+
+def fermion_KitLad(L, J_ray, h_ray, disorder = [0.0,0.0], BC='periodic'):
